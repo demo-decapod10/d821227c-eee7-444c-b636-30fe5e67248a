@@ -1,40 +1,43 @@
 #!/bin/bash
-DECAPOD_BASE_DIR=decapod-base-yaml
-DECAPOD_BASE_URL=https://github.com/openinfradev/${DECAPOD_BASE_DIR}.git
-TKS_CUSTOM_BASE_DIR=tks-custom-base-yaml
-TKS_CUSTOM_BASE_URL=https://$USERNAME:$API_TOKEN_GITHUB@github.com/openinfradev/${TKS_CUSTOM_BASE_DIR}.git
+DECAPOD_BASE_URL=https://github.com/openinfradev/decapod-base-yaml.git
 BRANCH="main"
-
-rm -rf $DECAPOD_BASE_DIR $TKS_CUSTOM_BASE_DIR
-
-site_list=$(ls -d */ | sed 's/\///g' | egrep -v "docs|^template|^deprecated|output" )
-
-# output directory which will contain finally rendered k8s manifests
+DOCKER_IMAGE_REPO="docker.io"
+GITHUB_IMAGE_REPO="ghcr.io"
 outputdir="output"
-if [ $# -eq 1 ]; then
-  BRANCH=$1
-elif [ $# -eq 2 ]; then
-  BRANCH=$1
-  outputdir=$2
-elif [ $# -eq 3 ]; then
-  BRANCH=$1
-  outputdir=$2
-  site_list=$3
-fi
 
-echo "[render-cd] dacapod branch=$BRANCH, output directory=$outputdir ,target site(s)=${site_list}\n\n"
+rm -rf decapod-base-yaml
+site_list=$(ls -d */ | sed 's/\///g' | grep -v 'docs' | grep -v 'output' | grep -v 'offline')
 
-echo "Fetching decapod-base with $BRANCH branch/tag........"
+function usage {
+        echo -e "\nUsage: $0 [--site TARGET_SITE] [--base_url DECAPOD_BASE_URL] [--registry REGISTRY_URL]"
+        exit 1
+}
+
+# We use "$@" instead of $* to preserve argument-boundary information
+ARGS=$(getopt -o 'b:s:r:h' --long 'base-url:,site:,registry:,help' -- "$@") || usage
+eval "set -- $ARGS"
+
+while true; do
+    case $1 in
+      (-h|--help)
+            usage; shift 2;;
+      (-b|--base-url)
+            DECAPOD_BASE_URL=$2; shift 2;;
+      (-s|--site)
+            site_list=$2; shift 2;;
+      (-r|--registry)
+            DOCKER_IMAGE_REPO=$2
+            GITHUB_IMAGE_REPO=$2; shift 2;;
+      (--)  shift; break;;
+      (*)   exit 1;;           # error
+    esac
+done
+
+echo "[render-cd] dacapod branch=$BRANCH, output target=$outputdir ,target site(s)=${site_list}\n\n"
+
+echo "Fetch base with $BRANCH branch/tag........"
 git clone -b $BRANCH $DECAPOD_BASE_URL
 if [ $? -ne 0 ]; then
-  echo "Error while cloning from $DECAPOD_BASE_URL"
-  exit $?
-fi
-
-echo "Fetching tks-custom-base with $BRANCH branch/tag........"
-git clone -b $BRANCH $TKS_CUSTOM_BASE_URL
-if [ $? -ne 0 ]; then
-  echo "Error while cloning from $TKS_CUSTOM_BASE_URL"
   exit $?
 fi
 
@@ -47,43 +50,12 @@ do
   for app in `ls $site/`
   do
     # helm-release file name rendered on 1st phase
-    hr_file="$DECAPOD_BASE_DIR/$app/$site/$app-manifest.yaml"
-
-    if [ -d ./$DECAPOD_BASE_DIR/$app ]; then
-      # Case where app dir exists in both repos: not supported yet.
-      if [ -d ./$TKS_CUSTOM_BASE_DIR/$app ]; then
-        echo "$app directory exists in both decapod-base and custom-base. This case is not supported yet."
-        exit 1
-      # Common case (app dir only exists in decapod-base)
-      else
-        echo "No cutom-base for $app app. Just doing normal merge.."
-      fi
-    # If app dir only exists in custom-base, then copy the dir into decapod-base.
-    # (E.g., tks-cluster)
-    elif [ -d ./$TKS_CUSTOM_BASE_DIR/$app ]; then
-      # check if
-      # 1. the app dir has resource.yaml and kustomization.yaml points to current dir
-      # 2. site directory's kustomization.yaml points to ../base dir
-      # otherwise it's an error!
-      if [ -f ./$TKS_CUSTOM_BASE_DIR/$app/base/resources.yaml ] && grep resources.yaml ./$TKS_CUSTOM_BASE_DIR/$app/base/kustomization.yaml; then
-        echo "No decapod-base for $app app. Using custom-base as base configuration.."
-        cp -r $TKS_CUSTOM_BASE_DIR/$app $DECAPOD_BASE_DIR/
-      else
-        echo "Error: no resources.yaml file or wrong kustomization.yaml!"
-        exit 1
-      fi
-    else
-      echo "There's no base configuration for $app app at all. Exiting..."
-      exit 1
-    fi
-
-    mkdir $DECAPOD_BASE_DIR/$app/$site
-
-    # Copy site-values into decapod-base
-    cp -r $site/$app/*.yaml $DECAPOD_BASE_DIR/$app/$site/
+    hr_file="decapod-base-yaml/$app/$site/$app-manifest.yaml"
+    mkdir decapod-base-yaml/$app/$site
+    cp -r $site/$app/*.yaml decapod-base-yaml/$app/$site/
 
     echo "Rendering $app-manifest.yaml for $site site"
-    docker run --rm -i -v $(pwd)/$DECAPOD_BASE_DIR/$app:/$app --name kustomize-build sktdev/decapod-kustomize:latest kustomize build --enable_alpha_plugins /$app/$site -o /$app/$site/$app-manifest.yaml
+    docker run --rm -i -v $(pwd)/decapod-base-yaml/$app:/$app --name kustomize-build ${DOCKER_IMAGE_REPO}/sktdev/decapod-kustomize:latest kustomize build --enable_alpha_plugins /$app/$site -o /$app/$site/$app-manifest.yaml
     build_result=$?
 
     if [ $build_result != 0 ]; then
@@ -97,15 +69,15 @@ do
       exit 1
     fi
 
-    docker run --rm -i --net=host -v $(pwd)/$DECAPOD_BASE_DIR:/decapod-base-yaml -v $(pwd)/$outputdir:/out --name generate sktcloud/helmrelease2yaml:v1.5.0 -m $hr_file -t -o /out/$site/$app
+    docker run --rm -i --net=host -v $(pwd)/decapod-base-yaml:/decapod-base-yaml -v $(pwd)/$outputdir:/out --name generate ${DOCKER_IMAGE_REPO}/sktcloud/helmrelease2yaml:v1.5.0 -m $hr_file -t -o /out/$site/$app
     rm $hr_file
 
   done
 
   # Post processes for the customized action
   #   Action1. change the namespace for aws-cluster-resouces from argo to cluster-name
-  echo "almost finished :  change the namespace for aws-cluster-resouces from argo to cluster-name"
-  sudo sed -i "s/ namespace: argo/ namespace: $site/g" $(pwd)/output/$site/tks-cluster-aws/cluster-api-aws/*
+  echo "Almost finished: changing namespace for aws-cluster-resouces from argo to cluster-name.."
+  sudo sed -i "s/ namespace: argo/ namespace: $site/g" $(pwd)/$outputdir/$site/tks-cluster-aws/cluster-api-aws/*
   sudo sed -i "s/ - argo/ - $site/g" $(pwd)/output/$site/tks-cluster-aws/cluster-api-aws/*
   # It's possible besides of two above but very tricky!!
   # sudo sed -i "s/ argo$/ $site/g" $(pwd)/output/$site/tks-cluster-aws/cluster-api-aws/*
@@ -121,7 +93,6 @@ metadata:
 " > Namespace_aws_rc.yaml
   sudo mv Namespace_aws_rc.yaml $(pwd)/output/$site/tks-cluster-aws/cluster-api-aws/
   # End of Post process
-
 done
 
-rm -rf $DECAPOD_BASE_DIR $TKS_CUSTOM_BASE_DIR
+rm -rf decapod-base-yaml
