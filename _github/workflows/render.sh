@@ -1,5 +1,5 @@
 #!/bin/bash
-DECAPOD_BASE_URL=https://github.com/tks-management/decapod-base-yaml.git
+DECAPOD_BASE_URL=https://github.com/openinfradev/decapod-base-yaml.git
 BRANCH="main"
 
 site_list=$(ls -d */ | sed 's/\///g' | grep -v 'docs')

@@ -8,6 +8,8 @@ on:
   push:
     branches:
       - main
+      - release**
+  workflow_dispatch:
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -21,14 +23,17 @@ jobs:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v2
 
+      - name: Get branch name
+        id: branch-name
+        uses: tj-actions/branch-names@v5.2
+
       - name: Run render-cd.sh
         run: |
           set -xe
           chmod +x .github/workflows/render-cd.sh
           .github/workflows/render-cd.sh
-        env:
-          API_TOKEN_GITHUB: ${{ secrets.API_TOKEN_GITHUB }}
-          USERNAME: ${{ github.repository_owner }}
+
+          echo "current branch: ${{ steps.branch-name.outputs.current_branch }}"
 
       - name: Abstract the repository name from env.
         uses: bhowell2/github-substring-action@v1.0.0
@@ -47,5 +52,4 @@ jobs:
           destination-repository-name: ${{ steps.repository_name.outputs.substring }}
           user-email: 'taco_support@sk.com'
           commit-message: See ORIGIN_COMMIT
-          target-branch: main
-
+          target-branch: ${{ steps.branch-name.outputs.current_branch }}
